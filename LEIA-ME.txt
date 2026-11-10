@@ -1,0 +1,14 @@
+ESTAÇÃO METEOROLÓGICA - COMO USAR
+
+1) Windows: clique duas vezes em iniciar.bat    |  macOS: iniciar.command (ou: python3 iniciar.py)
+   Responda: nome e senha do Wi-Fi, IP do computador (já vem sugerido) e coordenadas.
+   O navegador abre o dashboard sozinho.
+
+2) Abra firmware/main_configurado.py no Thonny e salve no ESP32 com o nome main.py
+   (Arquivo > Salvar como > dispositivo MicroPython). Reinicie o ESP32.
+
+3) Em ~1 minuto os dados aparecem no dashboard.
+   Sem o ESP32? Com o servidor rodando, em outra janela: python iniciar.py --teste
+
+Problemas: "Servidor recusou 401" = chave diferente (refaça o passo 2).
+"Falha no envio" = IP errado, redes diferentes ou firewall bloqueando a porta 5000.

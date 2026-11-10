@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Estação Meteorológica Urbana</title>
+<style>
+:root{--bg:#f3f6f9;--card:#fff;--ink:#14212e;--mut:#556575;--line:#d9e1e8;--accent:#0b6fa4;
+--ok:#1f7a3d;--warn:#8a5a00;--bad:#b3261e;--okbg:#e3f4e8;--warnbg:#fff1cf;--badbg:#fde4e1}
+@media(prefers-color-scheme:dark){:root{--bg:#0e1620;--card:#16212d;--ink:#e8eef4;--mut:#9fb0c0;--line:#2a3a4a;
+--accent:#5cb8ec;--ok:#7bd49a;--warn:#f0c060;--bad:#ff8f86;--okbg:#17321f;--warnbg:#3a2f12;--badbg:#401c19}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 "Segoe UI",system-ui,sans-serif}
+header,main{max-width:1100px;margin:0 auto;padding:16px}
+h1{font-size:1.5rem;margin:0}h2{font-size:1rem;margin:0 0 8px;color:var(--mut);font-weight:600}
+.sub{color:var(--mut);margin:2px 0 0}
+#alertas{display:grid;gap:8px;margin-bottom:12px}
+.alerta{padding:12px 16px;border-radius:8px;border-left:6px solid;font-weight:600}
+.alerta small{display:block;font-weight:400}
+.alerta.bad{background:var(--badbg);border-color:var(--bad)}
+.alerta.warn{background:var(--warnbg);border-color:var(--warn)}
+.grid{display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(220px,1fr))}
+.card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px}
+.big{font-size:2rem;font-weight:700;line-height:1.1}
+.mut{color:var(--mut);font-size:.9rem}
+.wide{grid-column:1/-1}
+svg{width:100%;height:auto;display:block}
+.tick{fill:var(--mut);font-size:11px}
+.status{font-weight:700}
+#map{position:relative;height:260px;background:var(--bg);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.pin{position:absolute;transform:translate(-50%,-100%);font-size:.8rem;font-weight:700;text-align:center}
+.pin::after{content:"";display:block;width:12px;height:12px;margin:2px auto 0;background:var(--accent);border-radius:50%;border:2px solid var(--card)}
+a{color:var(--accent)}
+:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+</style>
+</head>
+<body>
+<header>
+  <h1>Estação Meteorológica Urbana</h1>
+  <p class="sub" id="atualizacao">Aguardando dados da estação…</p>
+</header>
+<main>
+  <div id="alertas" role="alert" aria-live="assertive"></div>
+
+  <section class="grid" aria-label="Condições atuais">
+    <div class="card"><h2>Temperatura</h2><div class="big" id="temp">–</div><div class="mut" id="sens">Sensação térmica –</div></div>
+    <div class="card"><h2>Umidade do ar</h2><svg viewBox="0 0 200 120" id="g-umid" role="img" aria-label="Medidor de umidade"></svg></div>
+    <div class="card"><h2>Qualidade do ar</h2><svg viewBox="0 0 200 120" id="g-ar" role="img" aria-label="Medidor de qualidade do ar"></svg><div class="status" id="ar-txt"></div></div>
+    <div class="card"><h2>Pressão</h2><div class="big" id="pres">–</div><div class="mut" id="tend">Tendência –</div></div>
+    <div class="card"><h2>Luz ambiente</h2><div class="big" id="lux">–</div><div class="mut">Sensor digital: claro ou escuro</div></div>
+    <div class="card"><h2>Chuva agora</h2><div class="big" id="chuva">–</div><div class="mut" id="minmax"></div></div>
+  </section>
+
+  <section class="grid" style="margin-top:12px" aria-label="Gráficos">
+    <div class="card"><h2>Temperatura (°C) por hora</h2><svg id="c-temp" viewBox="0 0 400 180" role="img" aria-label="Gráfico de temperatura"></svg></div>
+    <div class="card"><h2>Pressão (hPa) por hora</h2><svg id="c-pres" viewBox="0 0 400 180" role="img" aria-label="Gráfico de pressão"></svg></div>
+    <div class="card"><h2>Nível de chuva (%) por hora</h2><svg id="c-chuva" viewBox="0 0 400 180" role="img" aria-label="Gráfico de chuva"></svg></div>
+    <div class="card"><h2>Localização da estação</h2><div id="map"></div><div class="mut" id="coords"></div></div>
+  </section>
+</main>
+
+<script>
+// Estações exibidas no mapa. Use as coordenadas reais; o firmware também as envia.
+const STATIONS = [{nome: "Estação 1", lat: -23.5505, lon: -46.6333}];
+
+const $ = id => document.getElementById(id);
+const fmt = (v, d = 1) => v == null ? "–" : Number(v).toFixed(d).replace(".", ",");
+const COR = {ok: "var(--ok)", warn: "var(--warn)", bad: "var(--bad)"};
+
+// Sensação térmica (temperatura aparente de Steadman, simplificada)
+function sensacao(t, u) {
+  const e = u / 100 * 6.105 * Math.exp(17.27 * t / (237.7 + t));
+  return t + 0.33 * e - 4;
+}
+// Leitura crua do MQ-135 em mV (não é ppm nem IQA). Ajuste os limites após calibrar em ar limpo.
+const AR_MODERADO = 2000, AR_RUIM = 3000;
+function classeAr(i) {
+  if (i < AR_MODERADO) return ["Boa", "ok"];
+  if (i < AR_RUIM) return ["Moderada", "warn"];
+  return ["Ruim", "bad"];
+}
+function classeChuva(n) {
+  if (n == null || n <= 0) return "Seco";
+  if (n < 25) return "Garoa";
+  if (n < 60) return "Chuva";
+  return "Chuva forte";
+}
+
+// Medidor semicircular: valor de 0 a max
+function gauge(svg, valor, max, cor, rotulo) {
+  const f = Math.max(0, Math.min(1, valor / max)), a = Math.PI * (1 - f);
+  const x = 100 + 80 * Math.cos(a), y = 100 - 80 * Math.sin(a);
+  $(svg).innerHTML =
+    `<path d="M20 100 A80 80 0 0 1 180 100" fill="none" stroke="var(--line)" stroke-width="16" stroke-linecap="round"/>` +
+    (f > 0 ? `<path d="M20 100 A80 80 0 0 1 ${x} ${y}" fill="none" stroke="${cor}" stroke-width="16" stroke-linecap="round"/>` : "") +
+    `<text x="100" y="95" text-anchor="middle" font-size="28" font-weight="700" fill="var(--ink)">${rotulo}</text>`;
+}
+
+function eixos(min, max) {
+  if (max - min < 1e-6) { min -= 1; max += 1; }
+  const p = (max - min) * .1;
+  return [min - p, max + p];
+}
+
+function linha(id, horas, vals) {
+  const pts = vals.map((v, i) => [i, v]).filter(p => p[1] != null);
+  if (pts.length < 2) { $(id).innerHTML = `<text x="200" y="90" text-anchor="middle" class="tick">Dados insuficientes (mínimo 2 horas)</text>`; return; }
+  const [lo, hi] = eixos(Math.min(...pts.map(p => p[1])), Math.max(...pts.map(p => p[1])));
+  const X = i => 40 + i / (vals.length - 1) * 340, Y = v => 150 - (v - lo) / (hi - lo) * 130;
+  const d = pts.map(p => `${X(p[0])},${Y(p[1])}`).join(" ");
+  $(id).innerHTML =
+    `<line x1="40" y1="150" x2="380" y2="150" stroke="var(--line)"/><line x1="40" y1="20" x2="40" y2="150" stroke="var(--line)"/>` +
+    `<text x="36" y="24" text-anchor="end" class="tick">${fmt(hi)}</text><text x="36" y="150" text-anchor="end" class="tick">${fmt(lo)}</text>` +
+    `<text x="40" y="170" class="tick">${horas[0]}h</text><text x="380" y="170" text-anchor="end" class="tick">${horas[horas.length - 1]}h</text>` +
+    `<polyline points="${d}" fill="none" stroke="var(--accent)" stroke-width="2.5"/>`;
+}
+
+function barras(id, horas, vals) {
+  const max = 100;
+  const w = 340 / vals.length;
+  $(id).innerHTML =
+    `<line x1="40" y1="150" x2="380" y2="150" stroke="var(--line)"/>` +
+    `<text x="36" y="24" text-anchor="end" class="tick">${fmt(max)}</text><text x="36" y="150" text-anchor="end" class="tick">0</text>` +
+    vals.map((v, i) => `<rect x="${40 + i * w + 1}" y="${150 - v / max * 130}" width="${Math.max(w - 2, 1)}" height="${v / max * 130}" fill="var(--accent)"><title>${horas[i]}h: ${fmt(v, 0)} %</title></rect>`).join("") +
+    `<text x="40" y="170" class="tick">${horas[0]}h</text><text x="380" y="170" text-anchor="end" class="tick">${horas[horas.length - 1]}h</text>`;
+}
+
+// Geometria analítica: mapeia (lat, lon) para (x, y) em % por transformação linear
+function mapaLinear() {
+  const lats = STATIONS.map(s => s.lat), lons = STATIONS.map(s => s.lon);
+  const m = 0.02;
+  const [la0, la1] = [Math.min(...lats) - m, Math.max(...lats) + m];
+  const [lo0, lo1] = [Math.min(...lons) - m, Math.max(...lons) + m];
+  $("map").innerHTML = STATIONS.map(s => {
+    const x = (s.lon - lo0) / (lo1 - lo0) * 100, y = (la1 - s.lat) / (la1 - la0) * 100;
+    return `<div class="pin" style="left:${x}%;top:${y}%">${s.nome}</div>`;
+  }).join("");
+  $("coords").textContent = STATIONS.map(s => `${s.nome}: ${s.lat.toFixed(4)}, ${s.lon.toFixed(4)}`).join(" | ");
+}
+
+// Mapa do Google (sem chave de API): mostra a posição enviada pelo ESP32
+function mapa() {
+  const s = STATIONS[0], q = s.lat + "," + s.lon;
+  const src = "https://maps.google.com/maps?q=" + q + "&z=16&output=embed";
+  const box = $("map");
+  if (box.dataset.src !== src) {
+    box.dataset.src = src;
+    box.innerHTML = `<iframe title="Mapa com a localização da estação" src="${src}" loading="lazy" referrerpolicy="no-referrer-when-downgrade" style="border:0;width:100%;height:100%"></iframe>`;
+  }
+  $("coords").innerHTML = `${s.nome}: ${s.lat.toFixed(4)}, ${s.lon.toFixed(4)} · <a href="https://www.google.com/maps?q=${q}" target="_blank" rel="noopener">Abrir no Google Maps</a>`;
+}
+
+function alertas(u, serie) {
+  const a = [];
+  const p = serie.map(x => x.pressao).filter(v => v != null);
+  if (p.length >= 4 && p[p.length - 4] - p[p.length - 1] >= 3)
+    a.push(["bad", "Alerta de tempestade", "A pressão caiu 3 hPa ou mais nas últimas 3 horas. Evite áreas abertas e fique atento a chuva forte e vento."]);
+  if (u.qualidade_ar >= AR_RUIM)
+    a.push(["bad", "Qualidade do ar ruim", "Pessoas sensíveis devem evitar atividade física ao ar livre. Mantenha janelas fechadas se possível."]);
+  if (u.temperatura >= 35 && u.umidade <= 30)
+    a.push(["warn", "Calor e ar seco", "Beba água com frequência e evite exposição ao sol nas horas mais quentes."]);
+  $("alertas").innerHTML = a.map(x => `<div class="alerta ${x[0]}">${x[1]}<small>${x[2]}</small></div>`).join("");
+}
+
+async function carregar() {
+  try {
+    const [u, serie, r] = await Promise.all(["ultima", "leituras", "resumo"].map(p => fetch("/api/" + p).then(x => x.json())));
+    if (!u) return;
+    const [txt, cl] = classeAr(u.qualidade_ar);
+    $("atualizacao").textContent = "Última leitura: " + new Date(u.data_iso).toLocaleString("pt-BR");
+    $("temp").textContent = fmt(u.temperatura) + " °C";
+    $("sens").textContent = "Sensação térmica " + fmt(sensacao(u.temperatura, u.umidade)) + " °C";
+    gauge("g-umid", u.umidade, 100, "var(--accent)", fmt(u.umidade, 0) + "%");
+    gauge("g-ar", u.qualidade_ar, 5000, COR[cl], fmt(u.qualidade_ar, 0));
+    $("ar-txt").textContent = "Qualidade do ar: " + txt + " (leitura crua em mV)";
+    $("ar-txt").style.color = COR[cl];
+    $("pres").textContent = fmt(u.pressao) + " hPa";
+    const p = serie.map(x => x.pressao).filter(v => v != null);
+    const dp = p.length >= 4 ? p[p.length - 1] - p[p.length - 4] : null;
+    $("tend").textContent = dp == null ? "Tendência: dados insuficientes" : `Tendência (3 h): ${dp > 0.5 ? "subindo" : dp < -0.5 ? "caindo" : "estável"} (${dp > 0 ? "+" : ""}${fmt(dp)} hPa)`;
+    $("lux").textContent = u.luz_escuro ? "Escuro" : "Claro";
+    $("chuva").textContent = classeChuva(u.chuva_nivel);
+    $("minmax").textContent = `Temp. 24 h: mín ${fmt(r.temperatura_min)} °C, máx ${fmt(r.temperatura_max)} °C`;
+    const horas = serie.map(x => new Date(x.hora).getHours());
+    if (serie.length) {
+      linha("c-temp", horas, serie.map(x => x.temperatura));
+      linha("c-pres", horas, serie.map(x => x.pressao));
+      barras("c-chuva", horas, serie.map(x => x.chuva_nivel || 0));
+    }
+    if (u.latitude != null && u.longitude != null) { STATIONS[0].lat = u.latitude; STATIONS[0].lon = u.longitude; }
+    mapa();
+    alertas(u, serie);
+  } catch (e) {
+    $("atualizacao").textContent = "Não foi possível carregar os dados. Tentando novamente…";
+  }
+}
+carregar();
+setInterval(carregar, 30000);
+</script>
+</body>
+</html>
